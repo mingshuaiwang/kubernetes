@@ -350,6 +350,9 @@ type VolumeSource struct {
 	// StorageOS represents a StorageOS volume attached and mounted on Kubernetes nodes.
 	// +optional
 	StorageOS *StorageOSVolumeSource `json:"storageos,omitempty" protobuf:"bytes,27,opt,name=storageos"`
+	// QuotaVolume represents a volume to hold quota
+	// +optional
+	QuotaVolume *QuotaVolumeSource `json:"quotaVolume,omitempty" protobuf:"bytes,28,opt,name=quotaVolume"`
 }
 
 // PersistentVolumeClaimVolumeSource references the user's PVC in the same namespace.
@@ -448,6 +451,9 @@ type PersistentVolumeSource struct {
 	// More info: https://releases.k8s.io/HEAD/examples/volumes/storageos/README.md
 	// +optional
 	StorageOS *StorageOSPersistentVolumeSource `json:"storageos,omitempty" protobuf:"bytes,21,opt,name=storageos"`
+	// QuotaVolume represents a volume to hold quota
+	// +optional
+	QuotaVolume *QuotaVolumeSource `json:"quotaVolume,omitempty" protobuf:"bytes,22,opt,name=quotaVolume"`
 }
 
 const (
@@ -1373,6 +1379,10 @@ type ScaleIOVolumeSource struct {
 	// the ReadOnly setting in VolumeMounts.
 	// +optional
 	ReadOnly bool `json:"readOnly,omitempty" protobuf:"varint,10,opt,name=readOnly"`
+}
+
+type QuotaVolumeSource struct {
+	Name string `json:"name" protobuf:"bytes,1,rep,name=name"`
 }
 
 // Represents a StorageOS persistent volume resource.
@@ -3517,7 +3527,7 @@ type NodeSpec struct {
 // NodeConfigSource specifies a source of node configuration. Exactly one subfield (excluding metadata) must be non-nil.
 type NodeConfigSource struct {
 	metav1.TypeMeta `json:",inline"`
-	ConfigMapRef    *ObjectReference `json:"configMapRef,omitempty" protobuf:"bytes,1,opt,name=configMapRef"`
+	ConfigMapRef *ObjectReference `json:"configMapRef,omitempty" protobuf:"bytes,1,opt,name=configMapRef"`
 }
 
 // DaemonEndpoint contains information about a single Daemon endpoint.

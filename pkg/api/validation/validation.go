@@ -612,6 +612,14 @@ func validateVolumeSource(source *api.VolumeSource, fldPath *field.Path, volName
 			allErrs = append(allErrs, validateScaleIOVolumeSource(source.ScaleIO, fldPath.Child("scaleIO"))...)
 		}
 	}
+	if source.QuotaVolume != nil {
+		if numVolumes > 0 {
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("quotaVolume"), "may not specify more than 1 volume type"))
+		} else {
+			numVolumes++
+			allErrs = append(allErrs, validateQuotaVolumeSource(source.QuotaVolume, fldPath.Child("quotaVolume"))...)
+		}
+	}
 
 	if numVolumes == 0 {
 		allErrs = append(allErrs, field.Required(fldPath, "must specify a volume type"))
@@ -1233,6 +1241,14 @@ func validateScaleIOVolumeSource(sio *api.ScaleIOVolumeSource, fldPath *field.Pa
 	return allErrs
 }
 
+func validateQuotaVolumeSource(qv *api.QuotaVolumeSource, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if qv.Name == "" {
+		allErrs = append(allErrs, field.Required(fldPath.Child("Name"), ""))
+	}
+	return allErrs
+}
+
 func validateLocalVolumeSource(ls *api.LocalVolumeSource, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 	if ls.Path == "" {
@@ -1502,6 +1518,15 @@ func ValidatePersistentVolume(pv *api.PersistentVolume) field.ErrorList {
 		} else {
 			numVolumes++
 			allErrs = append(allErrs, validateStorageOSPersistentVolumeSource(pv.Spec.StorageOS, specPath.Child("storageos"))...)
+		}
+	}
+
+	if pv.Spec.QuotaVolume != nil {
+		if numVolumes > 0 {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("quotaVolume"), "may not specify more than 1 volume type"))
+		} else {
+			numVolumes++
+			allErrs = append(allErrs, validateQuotaVolumeSource(pv.Spec.QuotaVolume, specPath.Child("quotaVolume"))...)
 		}
 	}
 
@@ -3866,7 +3891,7 @@ func ValidateSecret(secret *api.Secret) field.ErrorList {
 			allErrs = append(allErrs, field.Required(field.NewPath("metadata", "annotations").Key(api.ServiceAccountNameKey), ""))
 		}
 	case api.SecretTypeOpaque, "":
-	// no-op
+		// no-op
 	case api.SecretTypeDockercfg:
 		dockercfgBytes, exists := secret.Data[api.DockerConfigKey]
 		if !exists {
@@ -3912,7 +3937,7 @@ func ValidateSecret(secret *api.Secret) field.ErrorList {
 		if _, exists := secret.Data[api.TLSPrivateKeyKey]; !exists {
 			allErrs = append(allErrs, field.Required(dataPath.Key(api.TLSPrivateKeyKey), ""))
 		}
-	// TODO: Verify that the key matches the cert.
+		// TODO: Verify that the key matches the cert.
 	default:
 		// no-op
 	}

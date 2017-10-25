@@ -151,6 +151,9 @@ func (pvcr *persistentVolumeClaimResize) checkVolumePlugin(pv *api.PersistentVol
 	if pv.Spec.Glusterfs != nil {
 		return true
 	}
+	if pv.Spec.QuotaVolume != nil {
+		return true
+	}
 	return false
 
 }

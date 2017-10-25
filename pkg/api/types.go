@@ -316,6 +316,9 @@ type VolumeSource struct {
 	// StorageOS represents a StorageOS volume that is attached to the kubelet's host machine and mounted into the pod
 	// +optional
 	StorageOS *StorageOSVolumeSource
+	// QuotaVolume represents a volume to hold quota
+	// +optional
+	QuotaVolume *QuotaVolumeSource
 }
 
 // Similar to VolumeSource but meant for the administrator who creates PVs.
@@ -391,6 +394,9 @@ type PersistentVolumeSource struct {
 	// More info: https://releases.k8s.io/HEAD/examples/volumes/storageos/README.md
 	// +optional
 	StorageOS *StorageOSPersistentVolumeSource
+	// QuotaVolume represents a volume to hold quota
+	// +optional
+	QuotaVolume *QuotaVolumeSource
 }
 
 type PersistentVolumeClaimVolumeSource struct {
@@ -973,6 +979,10 @@ type GlusterfsVolumeSource struct {
 	// the Glusterfs to be mounted with read-only permissions
 	// +optional
 	ReadOnly bool
+}
+
+type QuotaVolumeSource struct {
+	Name string `json:"name" protobuf:"bytes,1,rep,name=name"`
 }
 
 // Represents a Rados Block Device mount that lasts the lifetime of a pod.
