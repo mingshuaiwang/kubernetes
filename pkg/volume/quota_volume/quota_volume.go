@@ -220,6 +220,10 @@ func (plugin *quotaVolumePlugin) ExpandVolumeDevice(spec *volume.Spec, newSize r
 	return newSize, nil
 }
 
+func (plugin *quotaVolumePlugin) ExpandVolumeDeviceFS(spec *volume.Spec, newSize resource.Quantity, oldSize resource.Quantity) (resource.Quantity, error) {
+	return newSize, nil
+}
+
 func (plugin *quotaVolumePlugin) RequiresFSResize() bool {
 	return false
 }

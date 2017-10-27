@@ -36,6 +36,7 @@ import (
 	"k8s.io/kubernetes/pkg/volume/util/nestedpendingoperations"
 	volumetypes "k8s.io/kubernetes/pkg/volume/util/types"
 	"k8s.io/kubernetes/pkg/volume/util/volumehelper"
+	volumecache "k8s.io/kubernetes/pkg/kubelet/volumemanager/fsexpander/cache"
 )
 
 // OperationExecutor defines a set of operations for attaching, detaching,
@@ -122,6 +123,9 @@ type OperationExecutor interface {
 	IsOperationPending(volumeName v1.UniqueVolumeName, podName volumetypes.UniquePodName) bool
 	// Expand Volume will grow size available to PVC
 	ExpandVolume(*expandcache.PVCWithResizeRequest, expandcache.VolumeResizeMap) error
+
+	// Expand VolumeFS after volume expanded
+	ExpandVolumeFS(*volumecache.PVCWithFSResizeRequest, volumecache.VolumeFSResizeMap) error
 }
 
 // NewOperationExecutor returns a new instance of OperationExecutor.
@@ -547,7 +551,7 @@ func (oe *operationExecutor) AttachVolume(
 
 	opCompleteFunc := util.OperationCompleteHook(plugin, "volume_attach")
 	return oe.pendingOperations.Run(
-		volumeToAttach.VolumeName, "" /* podName */, attachFunc, opCompleteFunc)
+		volumeToAttach.VolumeName, "" /* podName */ , attachFunc, opCompleteFunc)
 }
 
 func (oe *operationExecutor) DetachVolume(
@@ -562,7 +566,7 @@ func (oe *operationExecutor) DetachVolume(
 
 	opCompleteFunc := util.OperationCompleteHook(plugin, "volume_detach")
 	return oe.pendingOperations.Run(
-		volumeToDetach.VolumeName, "" /* podName */, detachFunc, opCompleteFunc)
+		volumeToDetach.VolumeName, "" /* podName */ , detachFunc, opCompleteFunc)
 }
 
 func (oe *operationExecutor) VerifyVolumesAreAttached(
@@ -641,7 +645,7 @@ func (oe *operationExecutor) VerifyVolumesAreAttached(
 		opCompleteFunc := util.OperationCompleteHook(pluginName, "verify_volumes_are_attached")
 		// Ugly hack to ensure - we don't do parallel bulk polling of same volume plugin
 		uniquePluginName := v1.UniqueVolumeName(pluginName)
-		err = oe.pendingOperations.Run(uniquePluginName, "" /* Pod Name */, bulkVerifyVolumeFunc, opCompleteFunc)
+		err = oe.pendingOperations.Run(uniquePluginName, "" /* Pod Name */ , bulkVerifyVolumeFunc, opCompleteFunc)
 		if err != nil {
 			glog.Errorf("BulkVerifyVolumes.Run Error bulk volume verification for plugin %q  with %v", pluginName, err)
 		}
@@ -660,7 +664,7 @@ func (oe *operationExecutor) VerifyVolumesAreAttachedPerNode(
 
 	opCompleteFunc := util.OperationCompleteHook("<n/a>", "verify_volumes_are_attached_per_node")
 	// Give an empty UniqueVolumeName so that this operation could be executed concurrently.
-	return oe.pendingOperations.Run("" /* volumeName */, "" /* podName */, volumesAreAttachedFunc, opCompleteFunc)
+	return oe.pendingOperations.Run("" /* volumeName */ , "" /* podName */ , volumesAreAttachedFunc, opCompleteFunc)
 }
 
 func (oe *operationExecutor) MountVolume(
@@ -719,11 +723,22 @@ func (oe *operationExecutor) UnmountDevice(
 
 	opCompleteFunc := util.OperationCompleteHook(plugin, "unmount_device")
 	return oe.pendingOperations.Run(
-		deviceToDetach.VolumeName, "" /* podName */, unmountDeviceFunc, opCompleteFunc)
+		deviceToDetach.VolumeName, "" /* podName */ , unmountDeviceFunc, opCompleteFunc)
 }
 
 func (oe *operationExecutor) ExpandVolume(pvcWithResizeRequest *expandcache.PVCWithResizeRequest, resizeMap expandcache.VolumeResizeMap) error {
 	expandFunc, pluginName, err := oe.operationGenerator.GenerateExpandVolumeFunc(pvcWithResizeRequest, resizeMap)
+
+	if err != nil {
+		return err
+	}
+	uniqueVolumeKey := v1.UniqueVolumeName(pvcWithResizeRequest.UniquePVCKey())
+	opCompleteFunc := util.OperationCompleteHook(pluginName, "expand_volume")
+	return oe.pendingOperations.Run(uniqueVolumeKey, "", expandFunc, opCompleteFunc)
+}
+
+func (oe *operationExecutor) ExpandVolumeFS(pvcWithResizeRequest *volumecache.PVCWithFSResizeRequest, resizeMap volumecache.VolumeFSResizeMap) error {
+	expandFunc, pluginName, err := oe.operationGenerator.GenerateExpandVolumeFSFunc(pvcWithResizeRequest, resizeMap)
 
 	if err != nil {
 		return err
@@ -745,7 +760,7 @@ func (oe *operationExecutor) VerifyControllerAttachedVolume(
 
 	opCompleteFunc := util.OperationCompleteHook(plugin, "verify_controller_attached_volume")
 	return oe.pendingOperations.Run(
-		volumeToMount.VolumeName, "" /* podName */, verifyControllerAttachedVolumeFunc, opCompleteFunc)
+		volumeToMount.VolumeName, "" /* podName */ , verifyControllerAttachedVolumeFunc, opCompleteFunc)
 }
 
 // TODO: this is a workaround for the unmount device issue caused by gci mounter.

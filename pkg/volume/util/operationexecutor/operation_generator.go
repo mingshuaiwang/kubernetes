@@ -35,6 +35,7 @@ import (
 	"k8s.io/kubernetes/pkg/volume"
 	"k8s.io/kubernetes/pkg/volume/util"
 	"k8s.io/kubernetes/pkg/volume/util/volumehelper"
+	volumecache "k8s.io/kubernetes/pkg/kubelet/volumemanager/fsexpander/cache"
 )
 
 var _ OperationGenerator = &operationGenerator{}
@@ -64,9 +65,9 @@ func NewOperationGenerator(kubeClient clientset.Interface,
 	checkNodeCapabilitiesBeforeMount bool) OperationGenerator {
 
 	return &operationGenerator{
-		kubeClient:      kubeClient,
-		volumePluginMgr: volumePluginMgr,
-		recorder:        recorder,
+		kubeClient:                       kubeClient,
+		volumePluginMgr:                  volumePluginMgr,
+		recorder:                         recorder,
 		checkNodeCapabilitiesBeforeMount: checkNodeCapabilitiesBeforeMount,
 	}
 }
@@ -103,6 +104,7 @@ type OperationGenerator interface {
 		map[*volume.Spec]v1.UniqueVolumeName, ActualStateOfWorldAttacherUpdater) (func() error, error)
 
 	GenerateExpandVolumeFunc(*expandcache.PVCWithResizeRequest, expandcache.VolumeResizeMap) (func() error, string, error)
+	GenerateExpandVolumeFSFunc(*volumecache.PVCWithFSResizeRequest, volumecache.VolumeFSResizeMap) (func() error, string, error)
 }
 
 func (og *operationGenerator) GenerateVolumesAreAttachedFunc(
@@ -775,6 +777,47 @@ func (og *operationGenerator) GenerateExpandVolumeFunc(
 				og.recorder.Eventf(pvcWithResizeRequest.PVC, v1.EventTypeWarning, kevents.VolumeResizeFailed, err.Error())
 				return err
 			}
+		}
+		return nil
+
+	}
+	return expandFunc, volumePlugin.GetPluginName(), nil
+}
+
+func (og *operationGenerator) GenerateExpandVolumeFSFunc(
+	pvcWithFSResizeRequest *volumecache.PVCWithFSResizeRequest, resizeMap volumecache.VolumeFSResizeMap) (func() error, string, error) {
+
+	volumeSpec := volume.NewSpecFromPersistentVolume(pvcWithFSResizeRequest.PersistentVolume, false)
+
+	volumePlugin, err := og.volumePluginMgr.FindExpandablePluginBySpec(volumeSpec)
+
+	if err != nil {
+		return nil, "", fmt.Errorf("Error finding plugin for expanding volume: %q with error %v", pvcWithFSResizeRequest.QualifiedName(), err)
+	}
+
+	expandFunc := func() error {
+		newSize := pvcWithFSResizeRequest.ExpectedSize
+		pvSize := pvcWithFSResizeRequest.PersistentVolume.Spec.Capacity[v1.ResourceStorage]
+		if pvSize.Cmp(newSize) < 0 {
+			_, expandErr := volumePlugin.ExpandVolumeDeviceFS(
+				volumeSpec,
+				pvcWithFSResizeRequest.ExpectedSize,
+				pvcWithFSResizeRequest.CurrentSize)
+
+			if expandErr != nil {
+				glog.Errorf("Error expanding volume %q of plugin %s : %v", pvcWithFSResizeRequest.QualifiedName(), volumePlugin.GetPluginName(), expandErr)
+				og.recorder.Eventf(pvcWithFSResizeRequest.PVC, v1.EventTypeWarning, kevents.VolumeResizeFailed, expandErr.Error())
+				return expandErr
+			}
+		}
+
+		glog.V(4).Infof("Controller FS resizing done for PVC %s", pvcWithFSResizeRequest.QualifiedName())
+		err := resizeMap.MarkAsResized(pvcWithFSResizeRequest, newSize)
+
+		if err != nil {
+			glog.Errorf("Error marking pvc %s as FS resized : %v", pvcWithFSResizeRequest.QualifiedName(), err)
+			og.recorder.Eventf(pvcWithFSResizeRequest.PVC, v1.EventTypeWarning, kevents.VolumeResizeFailed, err.Error())
+			return err
 		}
 		return nil
 

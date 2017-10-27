@@ -207,6 +207,7 @@ type AttachableVolumePlugin interface {
 type ExpandableVolumePlugin interface {
 	VolumePlugin
 	ExpandVolumeDevice(spec *Spec, newSize resource.Quantity, oldSize resource.Quantity) (resource.Quantity, error)
+	ExpandVolumeDeviceFS(spec *Spec, newSize resource.Quantity, oldSize resource.Quantity) (resource.Quantity, error)
 	RequiresFSResize() bool
 }
 

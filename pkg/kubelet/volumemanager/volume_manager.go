@@ -25,7 +25,6 @@ import (
 	"github.com/golang/glog"
 	"k8s.io/api/core/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
@@ -39,11 +38,17 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/volumemanager/cache"
 	"k8s.io/kubernetes/pkg/kubelet/volumemanager/populator"
 	"k8s.io/kubernetes/pkg/kubelet/volumemanager/reconciler"
+	"k8s.io/kubernetes/pkg/kubelet/volumemanager/fsexpander"
 	"k8s.io/kubernetes/pkg/util/mount"
 	"k8s.io/kubernetes/pkg/volume"
 	"k8s.io/kubernetes/pkg/volume/util/operationexecutor"
 	"k8s.io/kubernetes/pkg/volume/util/types"
 	"k8s.io/kubernetes/pkg/volume/util/volumehelper"
+	rt "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/watch"
+	clientcache "k8s.io/client-go/tools/cache"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -87,6 +92,8 @@ const (
 	// operation is waiting it only blocks other operations on the same device,
 	// other devices are not affected.
 	waitForAttachTimeout time.Duration = 10 * time.Minute
+
+	volumeExpanderLoopSleepPeriod time.Duration = 100 * time.Millisecond
 )
 
 // VolumeManager runs a set of asynchronous loops that figure out which volumes
@@ -159,6 +166,41 @@ func NewVolumeManager(
 	checkNodeCapabilitiesBeforeMount bool,
 	keepTerminatedPodVolumes bool) VolumeManager {
 
+	var pvcInformer *clientcache.SharedIndexInformer
+	var pvInformer *clientcache.SharedIndexInformer
+
+	if kubeClient != nil {
+		tmpPvcInformer := clientcache.NewSharedIndexInformer(
+			&clientcache.ListWatch{
+				ListFunc: func(options metav1.ListOptions) (rt.Object, error) {
+					return kubeClient.CoreV1().PersistentVolumeClaims(metav1.NamespaceAll).List(options)
+				},
+				WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
+					return kubeClient.CoreV1().PersistentVolumeClaims(metav1.NamespaceAll).Watch(options)
+				},
+			},
+			&v1.PersistentVolumeClaim{},
+			0*time.Second,
+			clientcache.Indexers{clientcache.NamespaceIndex: clientcache.MetaNamespaceIndexFunc},
+		)
+		pvcInformer = &tmpPvcInformer
+
+		tmpPvInformer := clientcache.NewSharedIndexInformer(
+			&clientcache.ListWatch{
+				ListFunc: func(options metav1.ListOptions) (rt.Object, error) {
+					return kubeClient.CoreV1().PersistentVolumes().List(options)
+				},
+				WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
+					return kubeClient.CoreV1().PersistentVolumes().Watch(options)
+				},
+			},
+			&v1.PersistentVolume{},
+			0*time.Second,
+			clientcache.Indexers{clientcache.NamespaceIndex: clientcache.MetaNamespaceIndexFunc},
+		)
+		pvInformer = &tmpPvInformer
+	}
+
 	vm := &volumeManager{
 		kubeClient:          kubeClient,
 		volumePluginMgr:     volumePluginMgr,
@@ -170,6 +212,20 @@ func NewVolumeManager(
 			recorder,
 			checkNodeCapabilitiesBeforeMount),
 		),
+	}
+
+	if pvInformer != nil && pvcInformer != nil {
+		glog.Infof("Creating volume fs expander")
+		vm.volumeFSExpander = fsexpander.NewVolumeFSExpander(
+			kubeClient,
+			*pvcInformer,
+			*pvInformer,
+			volumeExpanderLoopSleepPeriod,
+			vm.actualStateOfWorld,
+			vm.desiredStateOfWorld,
+		)
+	} else {
+		glog.Warningf("skip creating volume fs expander due to pvInformer==nil(%v) or pvcInformer==nil(%v)", (pvInformer == nil), (pvcInformer == nil))
 	}
 
 	vm.desiredStateOfWorldPopulator = populator.NewDesiredStateOfWorldPopulator(
@@ -235,6 +291,8 @@ type volumeManager struct {
 	// desiredStateOfWorldPopulator runs an asynchronous periodic loop to
 	// populate the desiredStateOfWorld using the kubelet PodManager.
 	desiredStateOfWorldPopulator populator.DesiredStateOfWorldPopulator
+
+	volumeFSExpander fsexpander.VolumeFSExpander
 }
 
 func (vm *volumeManager) Run(sourcesReady config.SourcesReady, stopCh <-chan struct{}) {
@@ -245,6 +303,11 @@ func (vm *volumeManager) Run(sourcesReady config.SourcesReady, stopCh <-chan str
 
 	glog.Infof("Starting Kubelet Volume Manager")
 	go vm.reconciler.Run(stopCh)
+
+	if vm.volumeFSExpander != nil {
+		glog.Infof("Starting Kubelet Volume Manager fs expander")
+		go vm.volumeFSExpander.Run(sourcesReady, stopCh)
+	}
 
 	<-stopCh
 	glog.Infof("Shutting down Kubelet Volume Manager")

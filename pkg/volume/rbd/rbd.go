@@ -52,6 +52,7 @@ var _ volume.VolumePlugin = &rbdPlugin{}
 var _ volume.PersistentVolumePlugin = &rbdPlugin{}
 var _ volume.DeletableVolumePlugin = &rbdPlugin{}
 var _ volume.ProvisionableVolumePlugin = &rbdPlugin{}
+var _ volume.ExpandableVolumePlugin = &rbdPlugin{}
 
 const (
 	rbdPluginName                  = "kubernetes.io/rbd"
@@ -409,7 +410,7 @@ type rbd struct {
 	mounter  *mount.SafeFormatAndMount
 	exec     mount.Exec
 	// Utility interface that provides API calls to the provider to attach/detach disks.
-	manager                diskManager
+	manager diskManager
 	volume.MetricsProvider `json:"-"`
 }
 
@@ -530,4 +531,17 @@ func parseSecretMap(secretMap map[string]string) (string, error) {
 	}
 	// If not found, the last secret in the map wins as done before
 	return secret, nil
+}
+
+// Method of ExpandableVolumePlugin
+func (plugin *rbdPlugin) ExpandVolumeDevice(spec *volume.Spec, newSize resource.Quantity, oldSize resource.Quantity) (resource.Quantity, error) {
+	return newSize, nil
+}
+
+func (plugin *rbdPlugin) ExpandVolumeDeviceFS(spec *volume.Spec, newSize resource.Quantity, oldSize resource.Quantity) (resource.Quantity, error) {
+	return newSize, nil
+}
+
+func (plugin *rbdPlugin) RequiresFSResize() bool {
+	return false
 }
