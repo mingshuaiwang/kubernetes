@@ -94,6 +94,8 @@ const (
 	waitForAttachTimeout time.Duration = 10 * time.Minute
 
 	volumeExpanderLoopSleepPeriod time.Duration = 100 * time.Millisecond
+
+	volumeExpanderPvcPopulatorLoopSleepPeriod time.Duration = 5 * time.Second
 )
 
 // VolumeManager runs a set of asynchronous loops that figure out which volumes
@@ -221,8 +223,10 @@ func NewVolumeManager(
 			*pvcInformer,
 			*pvInformer,
 			volumeExpanderLoopSleepPeriod,
+			volumeExpanderPvcPopulatorLoopSleepPeriod,
 			vm.actualStateOfWorld,
 			vm.desiredStateOfWorld,
+			volumePluginMgr,
 		)
 	} else {
 		glog.Warningf("skip creating volume fs expander due to pvInformer==nil(%v) or pvcInformer==nil(%v)", (pvInformer == nil), (pvcInformer == nil))
@@ -353,19 +357,19 @@ func (vm *volumeManager) GetVolumesInUse() []v1.UniqueVolumeName {
 	volumesToReportInUse := make([]v1.UniqueVolumeName, 0, len(desiredVolumes)+len(mountedVolumes))
 	desiredVolumesMap := make(map[v1.UniqueVolumeName]bool, len(desiredVolumes)+len(mountedVolumes))
 
-	for _, volume := range desiredVolumes {
-		if volume.PluginIsAttachable {
-			if _, exists := desiredVolumesMap[volume.VolumeName]; !exists {
-				desiredVolumesMap[volume.VolumeName] = true
-				volumesToReportInUse = append(volumesToReportInUse, volume.VolumeName)
+	for _, vol := range desiredVolumes {
+		if vol.PluginIsAttachable {
+			if _, exists := desiredVolumesMap[vol.VolumeName]; !exists {
+				desiredVolumesMap[vol.VolumeName] = true
+				volumesToReportInUse = append(volumesToReportInUse, vol.VolumeName)
 			}
 		}
 	}
 
-	for _, volume := range mountedVolumes {
-		if volume.PluginIsAttachable {
-			if _, exists := desiredVolumesMap[volume.VolumeName]; !exists {
-				volumesToReportInUse = append(volumesToReportInUse, volume.VolumeName)
+	for _, vol := range mountedVolumes {
+		if vol.PluginIsAttachable {
+			if _, exists := desiredVolumesMap[vol.VolumeName]; !exists {
+				volumesToReportInUse = append(volumesToReportInUse, vol.VolumeName)
 			}
 		}
 	}

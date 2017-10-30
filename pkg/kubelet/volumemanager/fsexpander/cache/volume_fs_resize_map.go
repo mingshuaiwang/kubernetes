@@ -13,6 +13,7 @@ import (
 	"k8s.io/kubernetes/pkg/util/strings"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	commontypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/kubernetes/pkg/controller/volume/expand/util"
 )
 
 // VolumeResizeMap defines an interface that serves as a cache for holding pending resizing requests
@@ -57,11 +58,24 @@ func NewVolumeFSResizeMap(kubeClient clientset.Interface) VolumeFSResizeMap {
 	}
 }
 func (resizeMap *volumeFSResizeMap) AddPVCUpdate(pvc *v1.PersistentVolumeClaim, pv *v1.PersistentVolume) {
+	if pv.Spec.ClaimRef == nil || pvc.Namespace != pv.Spec.ClaimRef.Namespace || pvc.Name != pv.Spec.ClaimRef.Name {
+		glog.V(4).Infof("Persistent Volume is not bound to PVC being updated : %s", util.ClaimToClaimKey(pvc))
+		return
+	}
+
+	if pvc.Status.Phase != v1.ClaimBound {
+		return
+	}
+
 	resizeMap.Lock()
 	defer resizeMap.Unlock()
-	glog.Errorf("Adding pvc update-----------  %v\n", pv)
+
 	pvcSize := pvc.Spec.Resources.Requests[v1.ResourceStorage]
 	pvcStatusSize := pvc.Status.Capacity[v1.ResourceStorage]
+
+	if pvcStatusSize.Cmp(pvcSize) >= 0 {
+		return
+	}
 	pvcRequest := &PVCWithFSResizeRequest{
 		PVC:              pvc,
 		CurrentSize:      pvcStatusSize,
@@ -94,7 +108,7 @@ func (resizeMap *volumeFSResizeMap) MarkAsResized(pvcr *PVCWithFSResizeRequest, 
 
 	err := resizeMap.UpdatePVCCapacityAndConditions(pvcr, newSize, emptyCondition)
 	if err != nil {
-		glog.V(4).Infof("Error updating PV spec capacity for volume %q with : %v", pvcr.QualifiedName(), err)
+		glog.V(4).Infof("fsexpander: Error updating PV spec capacity for volume %q with : %v", pvcr.QualifiedName(), err)
 		return err
 	}
 	return nil
@@ -109,7 +123,7 @@ func (resizeMap *volumeFSResizeMap) UpdatePVCCapacityAndConditions(pvcr *PVCWith
 
 	_, updateErr := resizeMap.kubeClient.CoreV1().PersistentVolumeClaims(claimClone.Namespace).UpdateStatus(claimClone)
 	if updateErr != nil {
-		glog.V(4).Infof("updating PersistentVolumeClaim[%s] status: failed: %v", pvcr.QualifiedName(), updateErr)
+		glog.V(4).Infof("fsexpander: updating PersistentVolumeClaim[%s] status: failed: %v", pvcr.QualifiedName(), updateErr)
 		return updateErr
 	}
 	return nil
@@ -126,7 +140,7 @@ func (resizeMap *volumeFSResizeMap) UpdatePVSize(pvcr *PVCWithFSResizeRequest, n
 	oldData, err := json.Marshal(pvClone)
 
 	if err != nil {
-		return fmt.Errorf("Unexpected error marshaling PV : %q with error %v", pvClone.Name, err)
+		return fmt.Errorf("fsexpander: Unexpected error marshaling PV : %q with error %v", pvClone.Name, err)
 	}
 
 	pvClone.Spec.Capacity[v1.ResourceStorage] = newSize
@@ -134,19 +148,19 @@ func (resizeMap *volumeFSResizeMap) UpdatePVSize(pvcr *PVCWithFSResizeRequest, n
 	newData, err := json.Marshal(pvClone)
 
 	if err != nil {
-		return fmt.Errorf("Unexpected error marshaling PV : %q with error %v", pvClone.Name, err)
+		return fmt.Errorf("fsexpander: Unexpected error marshaling PV : %q with error %v", pvClone.Name, err)
 	}
 
 	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, pvClone)
 
 	if err != nil {
-		return fmt.Errorf("Error Creating two way merge patch for  PV : %q with error %v", pvClone.Name, err)
+		return fmt.Errorf("fsexpander: Error Creating two way merge patch for  PV : %q with error %v", pvClone.Name, err)
 	}
 
 	_, updateErr := resizeMap.kubeClient.CoreV1().PersistentVolumes().Patch(pvClone.Name, commontypes.StrategicMergePatchType, patchBytes)
 
 	if updateErr != nil {
-		glog.V(4).Infof("Error updating pv %q with error : %v", pvClone.Name, updateErr)
+		glog.V(4).Infof("fsexpander: Error updating pv %q with error : %v", pvClone.Name, updateErr)
 		return updateErr
 	}
 	return nil
@@ -171,7 +185,7 @@ func UpdatePVCCondition(pvc *v1.PersistentVolumeClaim,
 	claimClone.Status.Conditions = pvcConditions
 	updatedClaim, updateErr := kubeClient.CoreV1().PersistentVolumeClaims(claimClone.Namespace).UpdateStatus(claimClone)
 	if updateErr != nil {
-		glog.V(4).Infof("updating PersistentVolumeClaim[%s] status: failed: %v", ClaimToClaimKey(pvc), updateErr)
+		glog.V(4).Infof("fsexpander: updating PersistentVolumeClaim[%s] status: failed: %v", ClaimToClaimKey(pvc), updateErr)
 		return nil, updateErr
 	}
 	return updatedClaim, nil

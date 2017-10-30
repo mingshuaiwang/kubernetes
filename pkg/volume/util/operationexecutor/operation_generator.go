@@ -805,7 +805,7 @@ func (og *operationGenerator) GenerateExpandVolumeFSFunc(
 				pvcWithFSResizeRequest.CurrentSize)
 
 			if expandErr != nil {
-				glog.Errorf("Error expanding volume %q of plugin %s : %v", pvcWithFSResizeRequest.QualifiedName(), volumePlugin.GetPluginName(), expandErr)
+				glog.Errorf("Error fs expanding volume %q of plugin %s : %v", pvcWithFSResizeRequest.QualifiedName(), volumePlugin.GetPluginName(), expandErr)
 				og.recorder.Eventf(pvcWithFSResizeRequest.PVC, v1.EventTypeWarning, kevents.VolumeResizeFailed, expandErr.Error())
 				return expandErr
 			}

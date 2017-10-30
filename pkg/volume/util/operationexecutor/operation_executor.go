@@ -744,7 +744,7 @@ func (oe *operationExecutor) ExpandVolumeFS(pvcWithResizeRequest *volumecache.PV
 		return err
 	}
 	uniqueVolumeKey := v1.UniqueVolumeName(pvcWithResizeRequest.UniquePVCKey())
-	opCompleteFunc := util.OperationCompleteHook(pluginName, "expand_volume")
+	opCompleteFunc := util.OperationCompleteHook(pluginName, "expand_volume_fs")
 	return oe.pendingOperations.Run(uniqueVolumeKey, "", expandFunc, opCompleteFunc)
 }
 

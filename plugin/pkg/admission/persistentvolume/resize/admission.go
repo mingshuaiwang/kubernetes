@@ -154,6 +154,9 @@ func (pvcr *persistentVolumeClaimResize) checkVolumePlugin(pv *api.PersistentVol
 	if pv.Spec.QuotaVolume != nil {
 		return true
 	}
+	if pv.Spec.RBD != nil {
+		return true
+	}
 	return false
 
 }

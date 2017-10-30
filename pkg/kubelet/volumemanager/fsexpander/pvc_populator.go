@@ -18,7 +18,7 @@ limitations under the License.
 // desired state of the with the actual state of the world by triggering
 // actions.
 
-package expand
+package fsexpander
 
 import (
 	"time"
@@ -29,7 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
-	"k8s.io/kubernetes/pkg/controller/volume/expand/cache"
+	"k8s.io/kubernetes/pkg/kubelet/volumemanager/fsexpander/cache"
 )
 
 // PVCPopulator iterates through PVCs and checks if for bound PVCs
@@ -40,7 +40,7 @@ type PVCPopulator interface {
 
 type pvcPopulator struct {
 	loopPeriod time.Duration
-	resizeMap  cache.VolumeResizeMap
+	resizeMap  cache.VolumeFSResizeMap
 	pvcLister  corelisters.PersistentVolumeClaimLister
 	pvLister   corelisters.PersistentVolumeLister
 	kubeClient clientset.Interface
@@ -48,7 +48,7 @@ type pvcPopulator struct {
 
 func NewPVCPopulator(
 	loopPeriod time.Duration,
-	resizeMap cache.VolumeResizeMap,
+	resizeMap cache.VolumeFSResizeMap,
 	pvcLister corelisters.PersistentVolumeClaimLister,
 	pvLister corelisters.PersistentVolumeLister,
 	kubeClient clientset.Interface) PVCPopulator {
@@ -67,7 +67,7 @@ func (populator *pvcPopulator) Run(stopCh <-chan struct{}) {
 }
 
 func (populator *pvcPopulator) Sync() {
-	pvcs, err := populator.pvcLister.List(labels.Everything())
+	pvcs, err := populator.pvcLister.List(labels.SelectorFromSet(labels.Set(map[string]string{"status": "using"})))
 	if err != nil {
 		glog.Errorf("Listing PVCs failed in populator : %v", err)
 		return
@@ -78,11 +78,6 @@ func (populator *pvcPopulator) Sync() {
 
 		if err != nil {
 			glog.V(5).Infof("Error getting persistent volume for pvc %q : %v", pvc.UID, err)
-			continue
-		}
-		// just deal with available pvc
-		status, exists := pvc.Labels["status"]
-		if exists && status != "available" {
 			continue
 		}
 		populator.resizeMap.AddPVCUpdate(pvc, pv)

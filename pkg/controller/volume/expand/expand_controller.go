@@ -179,6 +179,13 @@ func (expc *expandController) pvcUpdate(oldObj, newObj interface{}) {
 	if newPVC == nil || !ok {
 		return
 	}
+
+	// just deal with available pvc
+	status, exists := newPVC.Labels["status"]
+	if exists && status != "available" {
+		return
+	}
+
 	pv, err := getPersistentVolume(newPVC, expc.pvLister)
 	if err != nil {
 		glog.V(5).Infof("Error getting Persistent Volume for pvc %q : %v", newPVC.UID, err)
@@ -228,7 +235,7 @@ func (expc *expandController) GetCloudProvider() cloudprovider.Interface {
 }
 
 func (expc *expandController) GetMounter(pluginName string) mount.Interface {
-	return nil
+	return mount.New("")
 }
 
 func (expc *expandController) GetExec(pluginName string) mount.Exec {

@@ -108,6 +108,15 @@ func makePDNameInternal(host volume.VolumeHost, pool string, image string) strin
 }
 
 type RBDUtil struct{}
+type RBDResizeReq struct {
+	plugin      *rbdPlugin
+	source      *v1.RBDVolumeSource
+	exec        mount.Exec
+	mounter     *mount.SafeFormatAndMount
+	newSizeInGB int64
+	oldSizeInGB int64
+	adminSecret string
+}
 
 func (util *RBDUtil) MakeGlobalPDName(rbd rbd) string {
 	return makePDNameInternal(rbd.plugin.host, rbd.Pool, rbd.Image)
@@ -155,6 +164,7 @@ func (util *RBDUtil) rbdLock(b rbdMounter, lock bool) error {
 		cmd, err = b.exec.Run("rbd", args...)
 		output = string(cmd)
 		glog.Infof("lock list output %q", output)
+		glog.Errorf("cmd rbd: %v", args)
 		if err != nil {
 			continue
 		}
@@ -179,6 +189,7 @@ func (util *RBDUtil) rbdLock(b rbdMounter, lock bool) error {
 							args = append(args, secret_opt...)
 							cmd, err = b.exec.Run("rbd", args...)
 							glog.Infof("remove orphaned locker %s from client %s: err %v, output: %s", lockInfo[1], lockInfo[0], err, string(cmd))
+							glog.Errorf("cmd rbd: %v", args)
 						}
 					}
 				}
@@ -188,6 +199,7 @@ func (util *RBDUtil) rbdLock(b rbdMounter, lock bool) error {
 			args := []string{"lock", "add", b.Image, lock_id, "--pool", b.Pool, "--id", b.Id, "-m", mon}
 			args = append(args, secret_opt...)
 			cmd, err = b.exec.Run("rbd", args...)
+			glog.Errorf("cmd rbd: %v", args)
 		} else {
 			// defencing, find locker name
 			ind := strings.LastIndex(output, lock_id) - 1
@@ -201,6 +213,7 @@ func (util *RBDUtil) rbdLock(b rbdMounter, lock bool) error {
 			args := []string{"lock", "remove", b.Image, lock_id, locker, "--pool", b.Pool, "--id", b.Id, "-m", mon}
 			args = append(args, secret_opt...)
 			cmd, err = b.exec.Run("rbd", args...)
+			glog.Errorf("cmd rbd: %v", args)
 		}
 
 		if err == nil {
@@ -209,6 +222,169 @@ func (util *RBDUtil) rbdLock(b rbdMounter, lock bool) error {
 		}
 	}
 	return err
+}
+
+func (util *RBDUtil) resizeDevice(req RBDResizeReq) error {
+	source := req.source
+	var err error
+	var output string
+	var cmd []byte
+	secret_opt := []string{"--key=" + req.adminSecret}
+
+	l := len(source.CephMonitors)
+	// avoid mount storm, pick a host randomly
+	start := rand.Int() % l
+	// iterate all hosts until resize succeeds.
+	for i := start; i < start+l; i++ {
+		mon := source.CephMonitors[i%l]
+		args := []string{"resize", source.RBDImage, "-s", fmt.Sprintf("%dG", req.newSizeInGB), "--pool", source.RBDPool, "--id", source.RadosUser, "-m", mon}
+		args = append(args, secret_opt...)
+		cmd, err = req.exec.Run("rbd", args...)
+		glog.V(5).Infof("rbd(%s/%s) resize: resize image cmd rbd %v", source.RBDPool, source.RBDImage, args)
+		output = string(cmd)
+		glog.Infof("rbd(%s/%s) resize: resize image output %q", source.RBDPool, source.RBDImage, output)
+		if err == nil {
+			break
+		}
+	}
+
+	// create mount point
+	tmpMntPath := fmt.Sprintf("/tmp/gaia_rbd_tmp_path/%s/%s", source.RBDPool, source.RBDImage)
+	if err = os.MkdirAll(tmpMntPath, 0750); err != nil {
+		return fmt.Errorf("rbd(%s/%s) resize: failed to mkdir %s, error %v", source.RBDPool, source.RBDImage, tmpMntPath, err)
+	}
+
+	devicePath, found := waitForPath(source.RBDPool, source.RBDImage, 1)
+	if !found {
+		_, err = req.exec.Run("modprobe", "rbd")
+		if err != nil {
+			glog.Warningf("rbd(%s/%s) resize: failed to load rbd kernel module:%v", source.RBDPool, source.RBDImage, err)
+		}
+		var output []byte
+		// avoid mount storm, pick a host randomly
+		start := rand.Int() % l
+		// iterate all hosts until mount succeeds.
+		for i := start; i < start+l; i++ {
+			mon := source.CephMonitors[i%l]
+			glog.V(1).Infof("rbd(%s/%s) resize: exec rbd map on ceph-mon(%s)", source.RBDPool, source.RBDImage, mon)
+			output, err = req.exec.Run("rbd", "map", source.RBDImage, "--pool", source.RBDPool, "--id", source.RadosUser, "-m", mon, "--key="+req.adminSecret)
+			if err == nil {
+				break
+			}
+			glog.V(1).Infof("rbd(%s/%s) resize: map error %v %s", source.RBDPool, source.RBDImage, err, string(output))
+		}
+		if err != nil {
+			return fmt.Errorf("rbd(%s/%s) resize: map failed %v %s", source.RBDPool, source.RBDImage, err, string(output))
+		}
+		devicePath, found = waitForPath(source.RBDPool, source.RBDImage, 10)
+		if !found {
+			cleanResizeEffect(req)
+			return fmt.Errorf("rbd(%s/%s) resize: Could not map image: Timeout after 10s", source.RBDPool, source.RBDImage)
+		}
+		glog.Infof("rbd(%s/%s) resize: successfully map image to %s", source.RBDPool, source.RBDImage, devicePath)
+	}
+	time.Sleep(1 * time.Second)
+	outputBytes, err := req.exec.Run("blkid", devicePath)
+	glog.Infof("cmd blkid %s: %v", devicePath, err)
+	if err != nil && !strings.Contains(err.Error(), "exit status 2") {
+		cleanResizeEffect(req)
+		return fmt.Errorf("rbd(%s/%s) resize: failed to blkid err: %v", source.RBDPool, source.RBDImage, err)
+	}
+	output = string(outputBytes)
+	if len(output) == 0 {
+		glog.Infof("rbd(%s/%s) resize: image has no fs, resize succeed.", source.RBDPool, source.RBDImage)
+		cleanResizeEffect(req)
+		return nil
+	}
+	if !strings.Contains(output, source.FSType) {
+		cleanResizeEffect(req)
+		return fmt.Errorf("rbd(%s/%s) resize: image fstype is not xfs, out: %s", source.RBDPool, source.RBDImage, output)
+	}
+
+	if err = req.mounter.FormatAndMount(devicePath, tmpMntPath, source.FSType, nil); err != nil {
+		cleanResizeEffect(req)
+		return fmt.Errorf("rbd(%s/%s) resize: failed to mount rbd volume %s [%s] to %s, error %v", source.RBDPool, source.RBDImage, devicePath, source.FSType, tmpMntPath, err)
+	}
+
+	glog.Infof("rbd(%s/%s) resize: successfully mount image %s/%s at %s", source.RBDPool, source.RBDImage, tmpMntPath)
+
+	_, err = req.exec.Run("xfs_growfs", tmpMntPath)
+	if err != nil {
+		cleanResizeEffect(req)
+		return fmt.Errorf("rbd(%s/%s) resize: failed to xfs_growfs rbd volume %s [%s] to %s, error %v", source.RBDPool, source.RBDImage, devicePath, source.FSType, tmpMntPath, err)
+	}
+	cleanResizeEffect(req)
+	glog.Infof("rbd(%s/%s) resize: successfully DONE", source.RBDPool, source.RBDImage)
+	return nil
+}
+
+func cleanResizeEffect(req RBDResizeReq) error {
+	source := req.source
+	mntPath := fmt.Sprintf("/tmp/gaia_rbd_tmp_path/%s/%s", source.RBDPool, source.RBDImage)
+	notMnt, err := req.mounter.IsLikelyNotMountPoint(mntPath)
+	if err != nil {
+		return fmt.Errorf("rbd(%s/%s) resize clean: failed to check mnt point(%s) err: %v", source.RBDPool, source.RBDImage, mntPath, err)
+	}
+	if notMnt {
+		os.RemoveAll(mntPath)
+	} else {
+
+		if err := req.mounter.Unmount(mntPath); err != nil {
+			return fmt.Errorf("rbd(%s/%s) resize clean: failed to umount path(%s) err: %v", source.RBDPool, source.RBDImage, mntPath, err)
+		}
+		os.RemoveAll(mntPath)
+	}
+	devicePath, found := waitForPath(source.RBDPool, source.RBDImage, 10)
+	if !found {
+		glog.Warningf("rbd(%s/%s) resize clean: image resize(%s/%s) flag unmap is true, but devicePath not found", source.RBDPool, source.RBDImage)
+		return nil
+	}
+	_, err = req.exec.Run("rbd", "unmap", devicePath)
+	if err != nil {
+		return fmt.Errorf("rbd(%s/%s) resize clean: rbd unmap image dev %s err: %v", source.RBDPool, source.RBDImage, err, devicePath)
+	}
+	return nil
+}
+
+func (util *RBDUtil) resizeDeviceFS(req RBDResizeReq) error {
+	var outputBytes []byte
+	var output string
+	var err error
+	source := req.source
+	secret_opt := []string{"--key=" + req.adminSecret}
+	globalPath := makePDNameInternal(req.plugin.host, source.RBDPool, source.RBDImage)
+	notMnt, err := req.mounter.IsLikelyNotMountPoint(globalPath)
+	if err != nil {
+		return fmt.Errorf("rbd(%s/%s) fs resize: check mnt point(%s) err: %v", source.RBDPool, source.RBDImage, globalPath, err)
+	}
+	if notMnt {
+		return fmt.Errorf("rbd(%s/%s) fs resize: image globalpath(%s) not mntpoint", source.RBDPool, source.RBDImage, globalPath)
+	}
+	l := len(source.CephMonitors)
+	// avoid mount storm, pick a host randomly
+	start := rand.Int() % l
+	// iterate all hosts until resize succeeds.
+	for i := start; i < start+l; i++ {
+		mon := source.CephMonitors[i%l]
+		args := []string{"resize", source.RBDImage, "-s", fmt.Sprintf("%dG", req.newSizeInGB), "--pool", source.RBDPool, "--id", source.RadosUser, "-m", mon}
+		args = append(args, secret_opt...)
+		outputBytes, err = req.exec.Run("rbd", args...)
+		output = string(outputBytes)
+		glog.Infof("rbd(%s/%s) fs resize: resize image output %s", source.RBDPool, source.RBDImage, output)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("rbd(%s/%s) fs resize: resize image err: %v", source.RBDPool, source.RBDImage, err)
+	}
+
+	_, err = req.exec.Run("xfs_growfs", globalPath)
+	if err != nil {
+		return fmt.Errorf("rbd(%s/%s) fs resize: xfs_growfs rbd path %s err: %v", source.RBDPool, source.RBDImage, globalPath, err)
+	}
+	glog.Infof("rbd(%s/%s) fs resize: successfully DONE", source.RBDPool, source.RBDImage)
+	return nil
 }
 
 func (util *RBDUtil) persistRBD(rbd rbdMounter, mnt string) error {

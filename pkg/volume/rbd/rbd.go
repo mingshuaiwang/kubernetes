@@ -293,7 +293,7 @@ func (r *rbdVolumeProvisioner) Provision() (*v1.PersistentVolume, error) {
 	secretName := ""
 	secret := ""
 	imageFormat := rbdImageFormat2
-	fstype := ""
+	fstype := "xfs"
 
 	for k, v := range r.options.Parameters {
 		switch dstrings.ToLower(k) {
@@ -535,10 +535,75 @@ func parseSecretMap(secretMap map[string]string) (string, error) {
 
 // Method of ExpandableVolumePlugin
 func (plugin *rbdPlugin) ExpandVolumeDevice(spec *volume.Spec, newSize resource.Quantity, oldSize resource.Quantity) (resource.Quantity, error) {
+
+	source, _ := plugin.getRBDVolumeSource(spec)
+	if len(source.FSType) > 0 && source.FSType != "xfs" {
+		return oldSize, fmt.Errorf("rbd(%s/%s) resize: only support volume with fstype xfs", source.RBDPool, source.RBDImage)
+	}
+	source.FSType = "xfs"
+	adminSecretNamespace := rbdDefaultAdminSecretNamespace
+	adminSecretName := source.SecretRef.Name
+	if adminSecretName == "" {
+		return oldSize, fmt.Errorf("rbd(%s/%s) resize: rbd volumesource secret not set", source.RBDPool, source.RBDImage)
+	}
+
+	adminSecret, err := parsePVSecret(adminSecretNamespace, adminSecretName, plugin.host.GetKubeClient())
+	if err != nil {
+		return oldSize, fmt.Errorf("rbd(%s/%s) resize: failed to get admin secret from [%q/%q]: %v", source.RBDPool, source.RBDImage, adminSecretNamespace, adminSecretName, err)
+	}
+
+	// for resource use 1000 instead of 1024
+	newSizeInGB := newSize.ScaledValue(resource.Giga) - 1
+	oldSizeInGB := oldSize.ScaledValue(resource.Giga) - 1
+	resizeQeq := RBDResizeReq{
+		plugin:      plugin,
+		source:      source,
+		exec:        plugin.host.GetExec(plugin.GetPluginName()),
+		mounter:     &mount.SafeFormatAndMount{Interface: plugin.host.GetMounter(plugin.GetPluginName())},
+		adminSecret: adminSecret,
+		newSizeInGB: newSizeInGB,
+		oldSizeInGB: oldSizeInGB - 1,
+	}
+	util := &RBDUtil{}
+	if err = util.resizeDevice(resizeQeq); err != nil {
+		return oldSize, err
+	}
 	return newSize, nil
 }
 
 func (plugin *rbdPlugin) ExpandVolumeDeviceFS(spec *volume.Spec, newSize resource.Quantity, oldSize resource.Quantity) (resource.Quantity, error) {
+	source, _ := plugin.getRBDVolumeSource(spec)
+	if len(source.FSType) > 0 && source.FSType != "xfs" {
+		return oldSize, fmt.Errorf("rbd(%s/%s) fs resize: only support volume with fstype xfs", source.RBDPool, source.RBDImage)
+	}
+	source.FSType = "xfs"
+	adminSecretNamespace := rbdDefaultAdminSecretNamespace
+	adminSecretName := source.SecretRef.Name
+	if adminSecretName == "" {
+		return oldSize, fmt.Errorf("rbd(%s/%s) fs resize: rbd volumesource secret not set", source.RBDPool, source.RBDImage)
+	}
+
+	adminSecret, err := parsePVSecret(adminSecretNamespace, adminSecretName, plugin.host.GetKubeClient())
+	if err != nil {
+		return oldSize, fmt.Errorf("rbd(%s/%s) fs resize: failed to get admin secret from [%q/%q]: %v", source.RBDPool, source.RBDImage, adminSecretNamespace, adminSecretName, err)
+	}
+
+	// for resource use 1000 instead of 1024
+	newSizeInGB := newSize.ScaledValue(resource.Giga) - 1
+	oldSizeInGB := oldSize.ScaledValue(resource.Giga) - 1
+	resizeQeq := RBDResizeReq{
+		plugin:      plugin,
+		source:      source,
+		exec:        plugin.host.GetExec(plugin.GetPluginName()),
+		mounter:     &mount.SafeFormatAndMount{Interface: plugin.host.GetMounter(plugin.GetPluginName())},
+		adminSecret: adminSecret,
+		newSizeInGB: newSizeInGB,
+		oldSizeInGB: oldSizeInGB,
+	}
+	util := &RBDUtil{}
+	if err = util.resizeDeviceFS(resizeQeq); err != nil {
+		return oldSize, err
+	}
 	return newSize, nil
 }
 
